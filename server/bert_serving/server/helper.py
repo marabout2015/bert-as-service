@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import uuid
+import warnings
 
 import zmq
 from termcolor import colored
@@ -72,7 +73,7 @@ def get_args_parser():
     from . import __version__
     from .graph import PoolingStrategy
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description='Start a BertServer for serving')
 
     group1 = parser.add_argument_group('File Paths',
                                        'config the path, checkpoint and filename of a pretrained/fine-tuned BERT model')
@@ -91,7 +92,8 @@ def get_args_parser():
     group2 = parser.add_argument_group('BERT Parameters',
                                        'config how BERT model and pooling works')
     group2.add_argument('-max_seq_len', type=check_max_seq_len, default=25,
-                        help='maximum length of a sequence')
+                        help='maximum length of a sequence, longer sequence will be trimmed on the right side. '
+                             'set it to NONE for dynamically using the longest sequence in a (mini)batch.')
     group2.add_argument('-pooling_layer', type=int, nargs='+', default=[-2],
                         help='the encoder layer(s) that receives pooling. \
                         Give a list in order to concatenate several layers into one')
@@ -156,7 +158,11 @@ def get_args_parser():
 def check_tf_version():
     import tensorflow as tf
     tf_ver = tf.__version__.split('.')
-    assert int(tf_ver[0]) >= 1 and int(tf_ver[1]) >= 10, 'Tensorflow >=1.10 is required!'
+    if int(tf_ver[0]) <= 1 and int(tf_ver[1]) < 10:
+        raise ModuleNotFoundError('Tensorflow >=1.10 (one-point-ten) is required!')
+    elif int(tf_ver[0]) > 1:
+        warnings.warn('Tensorflow %s is not tested! It may or may not work. '
+                      'Feel free to submit an issue at https://github.com/hanxiao/bert-as-service/issues/' % tf.__version__)
     return tf_ver
 
 
@@ -197,6 +203,7 @@ def get_run_args(parser_fn=get_args_parser, printed=True):
 
 def get_benchmark_parser():
     parser = get_args_parser()
+    parser.description = 'Benchmark BertServer locally'
 
     parser.set_defaults(num_client=1, client_batch_size=4096)
 
@@ -215,6 +222,19 @@ def get_benchmark_parser():
     group.add_argument('-num_repeat', type=int, default=10,
                        help='number of repeats per experiment (must >2), '
                             'as the first two results are omitted for warm-up effect')
+    return parser
+
+
+def get_shutdown_parser():
+    parser = argparse.ArgumentParser()
+    parser.description = 'Shutting down a BertServer instance running on a specific port'
+
+    parser.add_argument('-ip', type=str, default='localhost',
+                        help='the ip address that a BertServer is running on')
+    parser.add_argument('-port', '-port_in', '-port_data', type=int, required=True,
+                        help='the port that a BertServer is running on')
+    parser.add_argument('-timeout', type=int, default=5000,
+                        help='timeout (ms) for connecting to a server')
     return parser
 
 

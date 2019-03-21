@@ -172,6 +172,7 @@ Note that you only need `pip install -U bert-serving-client` in this case, the s
 > - [Broadcasting to multiple clients](#broadcasting-to-multiple-clients)
 > - [Monitoring the service status in a dashboard](#monitoring-the-service-status-in-a-dashboard)
 > - [Using `bert-as-service` to serve HTTP requests in JSON](#using-bert-as-service-to-serve-http-requests-in-json)
+> - [Starting `BertServer` from Python](#starting-bertserver-from-python)
 
 
 <h2 align="center">Server and Client API</h2>
@@ -183,10 +184,11 @@ The best way to learn `bert-as-service` **latest API** is [reading the documenta
 
 ### Server API
 
-[Please always refer to the latest server-side API documented here.](https://bert-as-service.readthedocs.io/en/latest/source/server.html#server-side-api)
-Server-side is a CLI `bert-serving-start`, you can get the latest usage via:
+[Please always refer to the latest server-side API documented here.](https://bert-as-service.readthedocs.io/en/latest/source/server.html#server-side-api), you may get the latest usage via:
 ```bash
 bert-serving-start --help
+bert-serving-terminate --help
+bert-serving-benchmark --help
 ```
 
 | Argument | Type | Default | Description |
@@ -196,7 +198,7 @@ bert-serving-start --help
 | `ckpt_name`| str | `bert_model.ckpt` | filename of the checkpoint file. |
 | `config_name`| str | `bert_config.json` | filename of the JSON config file for BERT model. |
 | `graph_tmp_dir` | str | None | path to graph temp file |  
-| `max_seq_len` | int | `25` | maximum length of sequence, longer sequence will be trimmed on the right side. |
+| `max_seq_len` | int | `25` | maximum length of sequence, longer sequence will be trimmed on the right side. Set it to NONE for dynamically using the longest sequence in a (mini)batch. |
 | `mask_cls_sep` | bool | False | masking the embedding on [CLS] and [SEP] with zero. |
 | `num_worker` | int | `1` | number of (GPU/CPU) worker runs BERT model, each works in a separate process. |
 | `max_batch_size` | int | `256` | maximum number of sequences handled by each worker, larger batch will be partitioned into small batches. |
@@ -263,6 +265,7 @@ The full list of examples can be found in [`example/`](example). You can run eac
 > - [Broadcasting to multiple clients](#broadcasting-to-multiple-clients)
 > - [Monitoring the service status in a dashboard](#monitoring-the-service-status-in-a-dashboard)
 > - [Using `bert-as-service` to serve HTTP requests in JSON](#using-bert-as-service-to-serve-http-requests-in-json)
+> - [Starting `BertServer` from Python](#starting-bertserver-from-python)
 
 </details>
 
@@ -295,8 +298,8 @@ Finally, we are ready to receive new query and perform a simple "fuzzy" search a
 while True:
     query = input('your question: ')
     query_vec = bc.encode([query])[0]
-    # compute simple dot product as score
-    score = np.sum(query_vec * doc_vecs, axis=1)
+    # compute normalized dot product as score
+    score = np.sum(query_vec * doc_vecs, axis=1) / np.linalg.norm(doc_vecs, axis=1)
     topk_idx = np.argsort(score)[::-1][:topk]
     for idx in topk_idx:
         print('> %s\t%s' % (score[idx], questions[idx]))
@@ -619,6 +622,14 @@ json.dumps(bc.server_status, ensure_ascii=False)
 
 This gives the current status of the server including number of requests, number of clients etc. in JSON format. The only thing remained is to start a HTTP server for returning this JSON to the frontend that renders it.
 
+Alternatively, one may simply expose an HTTP port when starting a server via:
+
+```bash
+bert-serving-start -http_port 8001 -model_dir ...
+```
+
+This will allow one to use javascript or `curl` to fetch the server status at port 8001.
+
 `plugin/dashboard/index.html` shows a simple dashboard based on Bootstrap and Vue.js.
 
 <p align="center"><img src=".github/dashboard.png?raw=true"/></p>
@@ -667,6 +678,37 @@ curl -X POST http://xx.xx.xx.xx:8125/encode \
 To get the server's status and client's status, you can send GET requests at `/status/server` and `/status/client`, respectively.
 
 Finally, one may also config CORS to restrict the public access of the server by specifying `-cors` when starting `bert-serving-start`. By default `-cors=*`, meaning the server is public accessible.
+
+
+### Starting `BertServer` from Python
+
+Besides shell, one can also start a `BertServer` from python. Simply do
+```python
+from bert_serving.server.helper import get_args_parser
+from bert_serving.server import BertServer
+args = get_args_parser().parse_args(['-model_dir', 'YOUR_MODEL_PATH_HERE',
+                                     '-port', '5555',
+                                     '-port_out', '5556',
+                                     '-max_seq_len', 'NONE',
+                                     '-mask_cls_sep',
+                                     '-cpu'])
+server = BertServer(args)
+server.start()
+``` 
+
+Note that it's basically mirroring the arg-parsing behavior in CLI, so everything in that `.parse_args([])` list should be string, e.g. `['-port', '5555']` not `['-port', 5555]`.
+
+To shutdown the server, you may call the static method in `BertServer` class via:
+```python
+BertServer.shutdown(port=5555)
+```
+
+Or via shell CLI:
+```bash
+bert-serving-terminate -port 5555
+```
+
+This will terminate the server running on localhost at port 5555. You may also use it to terminate a remote server, see `bert-serving-terminate --help` for details.
 
 
 <h2 align="center">:speech_balloon: FAQ</h2>
@@ -765,7 +807,7 @@ No, not at all. Just do `encode` and let the server handles the rest. If the bat
 
 **A:** Yes. See [Benchmark](#zap-benchmark).
 
-To reproduce the results, please run [`python benchmark.py`](server/bert_serving/server/cli/bert-serving-benchmark.py).
+To reproduce the results, please run `bert-serving-benchmark`.
 
 ##### **Q:** What is backend based on?
 
@@ -921,7 +963,7 @@ The primary goal of benchmarking is to test the scalability and the speed of thi
 
 To reproduce the results, please run
 ```bash
-python benchmark.py
+bert-serving-benchmark --help
 ```
 
 Common arguments across all experiments are:
@@ -1057,3 +1099,18 @@ On Tesla V100 with `tensorflow=1.13.0-rc0` it gives:
 <img src=".github/fp16-xla.svg" width="600">
 
 FP16 achieves ~1.4x speedup (round-trip) comparing to the FP32 counterpart. To reproduce the result, please run `python example/example1.py`.
+
+
+<h2 align="center">Citing</h2>
+<p align="right"><a href="#bert-as-service"><sup>▴ Back to top</sup></a></p>
+
+If you use bert-as-service in a scientific publication, we would appreciate references to the following BibTex entry:
+
+```latex
+@misc{xiao2018bertservice,
+  title={bert-as-service},
+  author={Xiao, Han},
+  howpublished={\url{https://github.com/hanxiao/bert-as-service}},
+  year={2018}
+}
+```

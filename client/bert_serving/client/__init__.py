@@ -17,7 +17,7 @@ from zmq.utils import jsonapi
 __all__ = ['__version__', 'BertClient', 'ConcurrentBertClient']
 
 # in the future client version must match with server version
-__version__ = '1.8.2'
+__version__ = '1.8.6'
 
 if sys.version_info >= (3, 0):
     from ._py3_var import *
@@ -28,7 +28,7 @@ _Response = namedtuple('_Response', ['id', 'content'])
 Response = namedtuple('Response', ['id', 'embedding', 'tokens'])
 
 
-class BertClient:
+class BertClient(object):
     def __init__(self, ip='localhost', port=5555, port_out=5556,
                  output_fmt='ndarray', show_server_config=False,
                  identity=None, check_version=True, check_length=True,
@@ -102,6 +102,7 @@ class BertClient:
         self.port_out = port_out
         self.ip = ip
         self.length_limit = 0
+        self.token_info_available = False
 
         if not ignore_all_checks and (check_version or show_server_config or check_length or check_token_info):
             s_status = self.server_status
@@ -333,7 +334,7 @@ class BertClient:
             tmp = list(self.fetch())
             if sort:
                 tmp = sorted(tmp, key=lambda v: v.id)
-            tmp = [v.content for v in tmp]
+            tmp = [v.embedding for v in tmp]
             if concat:
                 if self.output_fmt == 'ndarray':
                     tmp = np.concatenate(tmp, axis=0)
@@ -414,6 +415,19 @@ class BertClient:
         self.close()
 
 
+class BCManager():
+    def __init__(self, available_bc):
+        self.available_bc = available_bc
+        self.bc = None
+
+    def __enter__(self):
+        self.bc = self.available_bc.pop()
+        return self.bc
+
+    def __exit__(self, *args):
+        self.available_bc.append(self.bc)
+
+
 class ConcurrentBertClient(BertClient):
     def __init__(self, max_concurrency=10, **kwargs):
         """ A thread-safe client object connected to a BertServer
@@ -445,10 +459,9 @@ class ConcurrentBertClient(BertClient):
         @wraps(func)
         def arg_wrapper(self, *args, **kwargs):
             try:
-                bc = self.available_bc.pop()
-                f = getattr(bc, func.__name__)
-                r = f if isinstance(f, dict) else f(*args, **kwargs)
-                self.available_bc.append(bc)
+                with BCManager(self.available_bc) as bc:
+                    f = getattr(bc, func.__name__)
+                    r = f if isinstance(f, dict) else f(*args, **kwargs)
                 return r
             except IndexError:
                 raise RuntimeError('Too many concurrent connections!'
